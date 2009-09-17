@@ -230,8 +230,6 @@ sub update_model
    my %columns;
    my %multiple_has_many;
    my %multiple_m2m;
-   my %select;
-   my %other_rel;
    my %other;
    my $field;
    my $value;
@@ -245,23 +243,16 @@ sub update_model
       $value = $field->clear ? undef : $field->value;
       if ( $source->has_relationship($name) )
       {
+         ($name) = values %{ $source->relationship_info($name)->{cond} };
+         $name =~ s{^self\.}{};
          if ( $field->can('multiple') && $field->multiple == 1 ) 
          {
             $multiple_has_many{$name} = $value;
          }
-         # If the table has a column name the same name as the
-         # the "select" relationship, the 'has_columns' will catch it.
-         # This is for Selects with different column name and rel name
          elsif ($field->can('options'))
          {
-            $select{$name} = $value;
+            $columns{$name} = $value;
          } 
-         else
-         {
-            # for now just remove other relationships because
-            # they aren't handled here, and could be handled in a subclass
-            $other_rel{$name} = $value;
-         }
       }
       elsif ( $source->has_column($name) )
       {
@@ -278,36 +269,22 @@ sub update_model
       }
    }
 
-   my $changed = 0;
    # Handle database columns
-   if ($item)
-   {
-      for my $field_name ( keys %columns )
-      {
-         $value = $columns{$field_name};
-         my $cur = $item->$field_name;
-         next unless $value || $cur;
-         next if ( ( $value && $cur ) && ( $value eq $cur ) );
-         $item->$field_name($value);
-         $changed++;
-      }
-      $self->updated_or_created('updated');
+   if ($item) {
+       $self->updated_or_created('updated');
    }
-   else    # create new item
-   {
-      $item = $self->resultset->create( \%columns );
-      $self->item($item);
-      $self->updated_or_created('created');
+   else {
+       $item = $self->resultset->new_result({});
+       $self->item($item);
+       $self->updated_or_created('created');
    }
-
-   # Set single select lists with rel different from column
-   for my $field_name ( keys %select )
+   for my $field_name ( keys %columns )
    {
-      my $rel_info = $item->relationship_info($field_name);
-      my ($cond)     = values %{ $rel_info->{cond} };
-      my ($self_col) = $cond =~ m/^self\.(\w+)$/;
-      $item->$self_col( $select{$field_name} );
-      $changed++;
+      $value = $columns{$field_name};
+      my $cur = $item->$field_name;
+      next unless $value || $cur;
+      next if ( ( $value && $cur ) && ( $value eq $cur ) );
+      $item->$field_name($value);
    }
 
    # set non-column, non-rel attributes
@@ -315,10 +292,14 @@ sub update_model
    {
       next unless $item->can($field_name);
       $item->$field_name( $other{$field_name} );
-      $changed++;
    }
    # update db
-   $item->update if $changed > 0;
+   if( $item->in_storage ) {
+       $item->update;
+   }
+   else {
+       $item->insert;
+   }
 
    # process Multiple field 'has_many' relationships
    for my $field_name ( keys %multiple_has_many )
@@ -343,34 +324,28 @@ sub update_model
       $item->create_related( $field_name, { $foreign_col => $_ } ) for keys %keep;
    } 
    # process Multiple field 'many_to_many' relationships
-   for my $field_name ( keys %multiple_m2m )
-   {
-      $value = $multiple_m2m{$field_name};
-      my %keep;
-      %keep = map { $_ => 1 } ref $value ? @$value : ($value)
-         if defined $value;
-      my $meth;
-      my $row;
-      if ( $self->updated_or_created eq 'updated' )
-      {
-         foreach $row ( $item->$field_name->all )
-         {
-            $meth = 'remove_from_' . $field_name;
-            $item->$meth( $row ) 
-               unless delete $keep{ $row->id };
-         }
-      }
-      my $source_name = $item->$field_name->result_source->source_name;
-      foreach my $id ( keys %keep )
-      {
-         $row = $self->schema->resultset($source_name)->find($id);
-         $meth = 'add_to_' . $field_name;
-         $item->$meth( $row );
-      }
-   }
+    if (%multiple_m2m) {
 
-   # Save item in form object
-   $self->item($item);
+        for my $col_name ( keys %multiple_m2m ) {
+
+            # Make sure the $col_name is a relation
+            next unless $item->can($col_name);
+
+            my $value = $multiple_m2m{$col_name};
+
+            # Get a result source, primary key, and resultset
+            # for the related many_to_many class
+            my $f_source = $item->$col_name->result_source;
+            my ($key)    = $f_source->primary_columns;
+            my $f_rs     = $f_source->resultset;
+
+            # And set.
+            my $method = 'set_' . $col_name;
+            my @objs = $f_rs->search( { $key => $value } );
+            $item->$method( @objs );
+        }
+    }
+
    $self->reset_params;    # force reload of parameters from values
    return $item;
 }
