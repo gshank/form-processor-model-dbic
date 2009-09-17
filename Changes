@@ -1,4 +1,7 @@
 Revision history for Form-Processor-Model-DBIC
+0.09 09/17/2009
+        Actually ship fix
+
 0.08 09/15/2009
         Fix bug creating row with Select where the Select column is not null
 
