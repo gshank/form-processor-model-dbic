@@ -180,7 +180,7 @@ sub update_from_form
 {
    my ( $self, $params ) = @_;
    return unless $self->validate($params);
-   $self->update_model;
+   $self->schema->txn_do( sub { $self->update_model } );
    return 1;
 }
 
