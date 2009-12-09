@@ -12,7 +12,7 @@ requires 'DBIx::Class';
 requires 'Carp';
 
 # things the tests need
-build_requires 'Test::More'      => '0.77';
+build_requires 'Test::More'      => '0.89';
 
 tests_recursive();
 

@@ -3,7 +3,7 @@ package Form::Processor::Model::DBIC;
 use base 'Form::Processor';
 use Carp;
 
-our $VERSION = '0.09';
+our $VERSION = '0.10';
 
 =head1 NAME
 
@@ -84,20 +84,6 @@ label_column, active_column). TT example:
    </select>
    </p>
 
-A multiple select list where 'hobbies' is the 'has_many' relationship for
-a 'many_to_many' pseudo-relationship. (field attributes: sort_order, label_column,
-active_column).
-
-   <p>
-   [% f = form.field('hobbies') %]
-   <label class="label" for="[% f.name %]">[% f.label || f.name %]</label>
-   <select name="[% f.name %]" multiple="multiple" size="[% f.size %]">
-     [% FOR option IN f.options %]
-       <option value="[% option.value %]" [% FOREACH selval IN f.value %][% IF selval == option.value %]selected="selected"[% END %][% END %]>[% option.label | html %]</option>
-     [% END %] 
-   </select>
-   </p>
-
 For a complex, widget-based TT setup, see the examples directory in the
 L<Catalyst::Plugin::Form::Processor> CPAN download.
  
@@ -131,7 +117,7 @@ the form namespace.
 This DBIC model will save form fields automatically to the database, will
 retrieve selection lists from the database (with type => 'Select' and a 
 fieldname containing a single relationship, or type => 'Multiple' and a
-has_many relationship), and will save the selected values (one value for 
+many_to_many pseudo-relationship), and will save the selected values (one value for 
 'Select', multiple values in a mapping table for a 'Multiple' field). 
 
 This package includes a working example using a SQLite database and a
@@ -148,8 +134,10 @@ that they can pass in their DBIx::Class schema object.
 =cut
 
 use Rose::Object::MakeMethods::Generic (
-   scalar => ['schema' => { interface => 'get_set_init'},
-              'source_name' => {},],
+    scalar => [
+        'schema'      => { interface => 'get_set_init' },
+        'source_name' => {},
+    ],
 );
 
 =head2 update_from_form
@@ -162,7 +150,7 @@ creates the object from values in the form.
 
 All fields that refer to columns and have changed will be updated. Field names
 that are a single relationship will be updated. Any field names that are related 
-to the class by "has_many" are assumed to have a mapping table and will be 
+to the class by "many_to_many" are assumed to have a mapping table and will be 
 updated.  Validation is run unless validation has already been run.  
 ($form->clear might need to be called if the $form object stays in memory
 between requests.)
@@ -176,12 +164,11 @@ Returns false if form does not validate, otherwise returns 1.  Very likely dies 
 
 =cut
 
-sub update_from_form
-{
-   my ( $self, $params ) = @_;
-   return unless $self->validate($params);
-   $self->schema->txn_do( sub { $self->update_model } );
-   return 1;
+sub update_from_form {
+    my ( $self, $params ) = @_;
+    return unless $self->validate($params);
+    $self->schema->txn_do( sub { $self->update_model } );
+    return 1;
 }
 
 =head2 model_validate
@@ -191,11 +178,10 @@ Subclass this method in your form.
 
 =cut
 
-sub model_validate
-{
-   my ($self) = @_;
-   return unless $self->validate_unique;
-   return 1;
+sub model_validate {
+    my ($self) = @_;
+    return unless $self->validate_unique;
+    return 1;
 }
 
 =head2 update_model
@@ -203,10 +189,6 @@ sub model_validate
 This is where the database row is updated. If you want to do some extra
 database processing (such as updating a related table) this is the
 method to subclass in your form.
-
-It currently assumes that any "has_many" relationship name used as a
-field in your form is for a "multiple" select list. This will probably
-change in the future.
 
 This routine allows the use of non-database (non-column, non-relationship) 
 accessors in your result source class. It identifies form fields as 1) column,
@@ -219,111 +201,85 @@ in a hashref, followed by "other" fields and relationships.
 
 =cut
 
-sub update_model
-{
-   my ($self) = @_;
-   my $item   = $self->item;
-   my $source = $self->source;
+sub update_model {
+    my ($self) = @_;
+    my $item   = $self->item;
+    my $source = $self->source;
 
-   # get a hash of all fields, skipping fields marked 'noupdate'
-   my $prefix = $self->name_prefix;
-   my %columns;
-   my %multiple_has_many;
-   my %multiple_m2m;
-   my %other;
-   my $field;
-   my $value;
-   # Save different flavors of fields into hashes for processing
-   foreach $field ( $self->fields )
-   {
-      next if $field->noupdate;
-      my $name = $field->name;
-      $name =~ s/^$prefix\.//g if $prefix;
-      # If the field is flagged "clear" then set to NULL.
-      $value = $field->clear ? undef : $field->value;
-      if ( $source->has_relationship($name) )
-      {
-         ($name) = values %{ $source->relationship_info($name)->{cond} };
-         $name =~ s{^self\.}{};
-         if ( $field->can('multiple') && $field->multiple == 1 ) 
-         {
-            $multiple_has_many{$name} = $value;
-         }
-         elsif ($field->can('options'))
-         {
+    # get a hash of all fields, skipping fields marked 'noupdate'
+    my $prefix = $self->name_prefix;
+    my %columns;
+    my %multiple_m2m;
+    my %other;
+    my $field;
+    my $value;
+
+    # Save different flavors of fields into hashes for processing
+    foreach $field ( $self->fields ) {
+        next if $field->noupdate;
+        my $name = $field->name;
+        $name =~ s/^$prefix\.//g if $prefix;
+
+        # If the field is flagged "clear" then set to NULL.
+        $value = $field->clear ? undef : $field->value;
+        if ( $source->has_relationship($name) ) {
+            # If this is a relationship then may need to convert it to
+            # a column name.  The common situation is where the column name
+            # is "artist_id" but the belongs_to relation name is "artist"
+            # where "artist" is what is used as the field name in the form.
+            #
+            # Another option would be to convert the $value into an object
+            # as then can set the relationship like this $cd->artist_rel( $artist_object )
+            ($name) = values %{ $source->relationship_info($name)->{cond} };
+            $name =~ s{^self\.}{};
             $columns{$name} = $value;
-         } 
-      }
-      elsif ( $source->has_column($name) )
-      {
-         $columns{$name} = $value;
-      }
-      elsif ( $field->can('multiple' ) && $field->multiple == 1 )
-      {
-         # didn't have a relationship and is multiple, so must be m2m
-         $multiple_m2m{$name} = $value;
-      }
-      else    # neither a column nor a rel
-      {
-         $other{$name} = $value;
-      }
-   }
+        }
+        elsif ( $source->has_column($name) ) {
+            $columns{$name} = $value;
+        }
+        elsif ( $field->can('multiple') && $field->multiple == 1 ) {
 
-   # Handle database columns
-   if ($item) {
-       $self->updated_or_created('updated');
-   }
-   else {
-       $item = $self->resultset->new_result({});
-       $self->item($item);
-       $self->updated_or_created('created');
-   }
-   for my $field_name ( keys %columns )
-   {
-      $value = $columns{$field_name};
-      my $cur = $item->$field_name;
-      next unless $value || $cur;
-      next if ( ( $value && $cur ) && ( $value eq $cur ) );
-      $item->$field_name($value);
-   }
+            # didn't have a relationship and is multiple, so must be m2m
+            $multiple_m2m{$name} = $value;
+        }
+        else    # neither a column nor a rel
+        {
+            $other{$name} = $value;
+        }
+    }
 
-   # set non-column, non-rel attributes
-   for my $field_name ( keys %other )
-   {
-      next unless $item->can($field_name);
-      $item->$field_name( $other{$field_name} );
-   }
-   # update db
-   if( $item->in_storage ) {
-       $item->update;
-   }
-   else {
-       $item->insert;
-   }
+    # Handle database columns
+    if ($item) {
+        $self->updated_or_created('updated');
+    }
+    else {
+        $item = $self->resultset->new_result( {} );
+        $self->item($item);
+        $self->updated_or_created('created');
+    }
+    for my $field_name ( keys %columns ) {
+        $value = $columns{$field_name};
+        my $cur = $item->$field_name;
+        next unless $value || $cur;
+        next if ( ( $value && $cur ) && ( $value eq $cur ) );
+        $item->$field_name($value);
+    }
 
-   # process Multiple field 'has_many' relationships
-   for my $field_name ( keys %multiple_has_many )
-   {
-      # This is a has_many/many_to_many relationship
-      my ( $self_rel, $self_col, $foreign_rel, $foreign_col, $m2m_rel ) =
-         $self->many_to_many($field_name);
-      $value = $multiple_has_many{$field_name};
-      my %keep;
-      %keep = map { $_ => 1 } ref $value ? @$value : ($value)
-         if defined $value;
-      if ( $self->updated_or_created eq 'updated' )
-      {
-         for ( $item->$field_name->all )
-         {
-            # delete old selections
-            $_->delete unless delete $keep{ $_->$foreign_col };
-          }
-      }
+    # set non-column, non-rel attributes
+    for my $field_name ( keys %other ) {
+        next unless $item->can($field_name);
+        $item->$field_name( $other{$field_name} );
+    }
 
-      # Add new related
-      $item->create_related( $field_name, { $foreign_col => $_ } ) for keys %keep;
-   } 
-   # process Multiple field 'many_to_many' relationships
+    # update db
+    if ( $item->in_storage ) {
+        $item->update;
+    }
+    else {
+        $item->insert;
+    }
+
+    # process Multiple field 'many_to_many' relationships
     if (%multiple_m2m) {
 
         for my $col_name ( keys %multiple_m2m ) {
@@ -342,12 +298,12 @@ sub update_model
             # And set.
             my $method = 'set_' . $col_name;
             my @objs = $f_rs->search( { $key => $value } );
-            $item->$method( @objs );
+            $item->$method(@objs);
         }
     }
 
-   $self->reset_params;    # force reload of parameters from values
-   return $item;
+    $self->reset_params;    # force reload of parameters from values
+    return $item;
 }
 
 
@@ -375,43 +331,45 @@ on column types. This routine returns either an array or type string.
 
 =cut
 
-sub guess_field_type
-{
-   my ( $self, $column ) = @_;
-   my $source = $self->source;
-   my @return;
+sub guess_field_type {
+    my ( $self, $column ) = @_;
+    my $source = $self->source;
+    my @return;
 
-   #  TODO: Should be able to use $source->column_info
+    #  TODO: Should be able to use $source->column_info
 
-   # Is it a direct has_a relationship?
-   if (
-      $source->has_relationship($column)
-      && (  $source->relationship_info($column)->{attrs}->{accessor} eq 'single'
-         || $source->relationship_info($column)->{attrs}->{accessor} eq 'filter' )
+    # Is it a direct has_a relationship?
+    if (
+        $source->has_relationship($column)
+        && (
+            $source->relationship_info($column)->{attrs}->{accessor} eq 'single'
+            || $source->relationship_info($column)->{attrs}->{accessor} eq
+            'filter' )
       )
-   {
-      my $f_class = $source->related_class($column);
-      @return =
-         $f_class->isa('DateTime')
-         ? ('DateTimeDMYHM')
-         : ('Select');
-   }
-   # Else is it has_many?
-   elsif ( $source->has_relationship($column)
-      && $source->relationship_info($column)->{attrs}->{accessor} eq 'multi' )
-   {
-      @return = ('Multiple');
-   }
-   elsif ( $column =~ /_time$/ )    # ends in time, must be time value
-   {
-      @return = ('DateTimeDMYHM');
-   }
-   else                             # default: Text
-   {
-      @return = ('Text');
-   }
+    {
+        my $f_class = $source->related_class($column);
+        @return =
+          $f_class->isa('DateTime')
+          ? ('DateTimeDMYHM')
+          : ('Select');
+    }
 
-   return wantarray ? @return : $return[0];
+    # Else is it has_many?
+    elsif ($source->has_relationship($column)
+        && $source->relationship_info($column)->{attrs}->{accessor} eq 'multi' )
+    {
+        @return = ('Multiple');
+    }
+    elsif ( $column =~ /_time$/ )    # ends in time, must be time value
+    {
+        @return = ('DateTimeDMYHM');
+    }
+    else                             # default: Text
+    {
+        @return = ('Text');
+    }
+
+    return wantarray ? @return : $return[0];
 }
 
 =head2 lookup_options
@@ -443,76 +401,65 @@ The currently selected values in a Multiple list are grouped at the top
 
 =cut
 
-sub lookup_options
-{
-   my ( $self, $field ) = @_;
+sub lookup_options {
+    my ( $self, $field ) = @_;
 
-   my $field_name = $field->name;
-   my $prefix     = $self->name_prefix;
-   $field_name =~ s/^$prefix\.//g if $prefix;
+    my $field_name = $field->name;
+    my $prefix     = $self->name_prefix;
+    $field_name =~ s/^$prefix\.//g if $prefix;
 
-   # if this field doesn't refer to a foreign key, return
-   my $f_class;
-   my $source;
-   if ($self->source->has_relationship($field_name) )
-   {
-      $f_class = $self->source->related_class($field_name);
-      $source = $self->schema->source($f_class);
+    # if this field doesn't refer to a foreign key, return
+    my $f_class;
+    my $source;
+    if ( $self->source->has_relationship($field_name) ) {
+        $f_class = $self->source->related_class($field_name);
+        $source  = $self->schema->source($f_class);
+    }
+    elsif ( $self->resultset->new_result( {} )->can("add_to_$field_name") ) {
 
-      my $rel_info = $self->source->relationship_info($field_name);
-      if ( $field->type eq 'Multiple'
-         || ( $field->type eq 'Auto' && $rel_info->{attrs}{accessor} eq 'multi' ) )
-      {
-         # This is a 'has_many' relationship with a mapping table
-         my ( $self_rel, $self_col, $foreign_rel, $foreign_col ) =
-            $self->many_to_many($field_name);
-         $source  = $source->related_source($foreign_rel);
-      }
-   }
-   elsif ($self->resultset->new_result({})->can("add_to_$field_name") )
-   {
-      # Multiple field with many_to_many relationship
-      $source = $self->resultset->new_result({})->$field_name->result_source;
-   }
-   return unless $source; 
+        # Multiple field with many_to_many relationship
+        $source =
+          $self->resultset->new_result( {} )->$field_name->result_source;
+    }
+    return unless $source;
 
-   my $label_column = $field->label_column;
-   return unless $source->has_column($label_column);
+    my $label_column = $field->label_column;
+    return unless $source->has_column($label_column);
 
-   my $active_col =
+    my $active_col =
         $self->can('active_column')
       ? $self->active_column
       : $field->active_column;
 
-   $active_col = '' unless $source->has_column($active_col);
-   my $sort_col = $field->sort_order;
-   $sort_col = defined $sort_col && $source->has_column($sort_col) ? $sort_col : $label_column;
+    $active_col = '' unless $source->has_column($active_col);
+    my $sort_col = $field->sort_order;
+    $sort_col = defined $sort_col
+      && $source->has_column($sort_col) ? $sort_col : $label_column;
 
-   my ($primary_key) = $source->primary_columns;
+    my ($primary_key) = $source->primary_columns;
 
-   # If there's an active column, only select active OR items already selected
-   my $criteria = {};
-   if ($active_col)
-   {
-      my @or = ( $active_col => 1 );
+    # If there's an active column, only select active OR items already selected
+    my $criteria = {};
+    if ($active_col) {
+        my @or = ( $active_col => 1 );
 
-      # But also include any existing non-active
-      push @or, ( "$primary_key" => $field->init_value )
-         if $self->item && defined $field->init_value;
-      $criteria->{'-or'} = \@or;
-   }
+        # But also include any existing non-active
+        push @or, ( "$primary_key" => $field->init_value )
+          if $self->item && defined $field->init_value;
+        $criteria->{'-or'} = \@or;
+    }
 
-   # get an array of row objects
-   my @rows =
+    # get an array of row objects
+    my @rows =
       $self->schema->resultset( $source->source_name )
       ->search( $criteria, { order_by => $sort_col } )->all;
 
-   return [
-      map {
-         my $label = $_->$label_column;
-         $_->id, $active_col && !$_->$active_col ? "[ $label ]" : "$label"
-         } @rows
-   ];
+    return [
+        map {
+            my $label = $_->$label_column;
+            $_->id, $active_col && !$_->$active_col ? "[ $label ]" : "$label"
+          } @rows
+    ];
 }
 
 =head2 init_value
@@ -525,66 +472,32 @@ in the form class - that method is called instead.
 This allows overriding specific fields in your form class.
 
 =cut
+sub init_value {
+    my ( $self, $field, $item ) = @_;
 
-sub init_value
-{
-   my ( $self, $field, $item ) = @_;
+    my $name = $field->name;
 
-   my $name = $field->name;
-   my $prefix = $self->name_prefix;
-   $name =~ s/$prefix\.//g if $prefix;
-   $item ||= $self->item;
-   return unless $item;
-   return $item->{$name} if ref($item) eq 'HASH';
-   return unless $item->isa('DBIx::Class') && $item->can($name);
-   return unless defined $item->$name;
+    # Not sure a prefix is ever used.
+    my $prefix = $self->name_prefix;
+    $name =~ s/^$prefix\.//g if $prefix;
 
-   my $source = $self->source;
-   if ( $source->has_relationship($name) )
-   {
-      if ( $field->can('multiple') && $field->multiple == 1 ) 
-      {
-         # has_many Multiple field
-         my ( undef, undef, undef, $foreign_col ) = $self->many_to_many($name);
-         my @rows = $item->search_related($name)->all;
-         my @values = map { $_->$foreign_col } @rows;
-         return @values;
-      }
-      elsif ($field->can('options'))
-      {
-         return $item->$name->id; 
-      } 
-      else # some other relationship (unsupported)
-      {
-         my $rel_info = $source->relationship_info($name);
-         if ( $rel_info->{attrs}->{accessor} eq 'single' ||
-              $rel_info->{attrs}->{accessor} eq 'filter' )
-         {
-            return $item->$name->get_inflated_columns; 
-         }
-         else # multi relationship (unsupported)
-         {
-            my $rs = $item->$name;
-            $rs->result_class('DBIx::Class::ResultClass::HashRefInflator'); 
-            return $rs->all;
-         }
-      }
-   }
-   elsif ( $source->has_column($name) )
-   {
-      return $item->$name; 
-   }
-   elsif ( $field->can('multiple' ) && $field->multiple == 1 )
-   {
-      my @rows = $item->$name->all;
-      my @values = map { $_->id } @rows;
-      return @values;
-   }
-   else    # neither a column nor a rel
-   {
-      return $item->$name;
-   }
-}
+    # Fetch item if not passed in (should always be the case)
+    $item ||= $self->item;
+    return unless $item;
+
+    # Our item may be an init object hash
+    return $item->{$name} if ref($item) eq 'HASH';
+
+    # Can we call the method on the object?
+    return unless $item->isa('DBIx::Class') && $item->can($name);
+
+    # Map any DBIC objects to their ids, but other objects (namely
+    # DateTime objects) are passed as-is.  Many-to-many will be a list
+    # of ids.
+    return map { ref $_ && $_->isa('DBIx::Class') ? $_->id : $_ } $item->$name;
+
+} ## end sub init_value
+
 
 
 =head2 validate_unique
@@ -601,53 +514,53 @@ For fields that are marked "unique", checks the database for uniqueness.
 
 =cut
 
-sub validate_unique
-{
-   my ($self) = @_;
+sub validate_unique {
+    my ($self) = @_;
 
-   my $unique      = $self->profile->{unique};
-   my $item        = $self->item;
-   my $rs          = $self->resultset;
-   my $found_error = 0;
-   my @unique_fields;
-   my $error_message;
-   if ( ref($unique) eq 'ARRAY' )
-   {
-      @unique_fields = @$unique;
-      $error_message = 'Value must be unique in the database';
-   }
-   if ( ref($unique) eq 'HASH' )
-   {
-      @unique_fields = keys %$unique;
-   }
+    my $unique      = $self->profile->{unique};
+    my $item        = $self->item;
+    my $rs          = $self->resultset;
+    my $found_error = 0;
+    my @unique_fields;
+    my $error_message;
+    if ( ref($unique) eq 'ARRAY' ) {
+        @unique_fields = @$unique;
+        $error_message = 'Value must be unique in the database';
+    }
+    if ( ref($unique) eq 'HASH' ) {
+        @unique_fields = keys %$unique;
+    }
 
-   return 1 unless @unique_fields;
-   for my $field ( map { $self->field($_) } @unique_fields )
-   {
-      next if $field->errors;
-      my $value = $field->value;
-      next unless defined $value;
-      my $name   = $field->name;
-      my $prefix = $self->name_prefix;
-      $name =~ s/^$prefix\.//g if $prefix;
+    return 1 unless @unique_fields;
+    for my $field ( map { $self->field($_) } @unique_fields ) {
+        next if $field->errors;
+        my $value = $field->value;
+        next unless defined $value;
+        my $name   = $field->name;
+        my $prefix = $self->name_prefix;
+        $name =~ s/^$prefix\.//g if $prefix;
 
-      # unique means there can only be one in the database like it.
-      my $count = $rs->search( { $name => $value } )->count;
+        # unique means there can only be one in the database like it.
+        my $count = $rs->search( { $name => $value } )->count;
 
-      # not found, this one is unique
-      next if $count < 1;
-      # found this value, but it's the same row we're updating
-      next
-         if $count == 1
-            && $self->item_id
-            && $self->item_id == $rs->search( { $name => $value } )->first->id;
-      my $field_error = $field->unique_message || $error_message || 
-            $self->profile->{'unique'}->{$name};
-      $field->add_error( $field_error );
-      $found_error++;
-   }
+        # not found, this one is unique
+        next if $count < 1;
 
-   return $found_error;
+        # found this value, but it's the same row we're updating
+        next
+          if $count == 1
+              && $self->item_id
+              && $self->item_id ==
+              $rs->search( { $name => $value } )->first->id;
+        my $field_error =
+             $field->unique_message
+          || $error_message
+          || $self->profile->{'unique'}->{$name};
+        $field->add_error($field_error);
+        $found_error++;
+    }
+
+    return $found_error;
 }
 
 =head2 init_item
@@ -669,15 +582,14 @@ If a database row for the item_id is not found, item_id will be set to undef.
 
 =cut
 
-sub init_item
-{
-   my $self = shift;
+sub init_item {
+    my $self = shift;
 
-   my $item_id = $self->item_id or return;
-   return unless $item_id =~ /^\d+$/;
-   my $item = $self->resultset->find($item_id);
-   $self->item_id(undef) unless $item;
-   return $item;
+    my $item_id = $self->item_id or return;
+    return unless $item_id =~ /^\d+$/;
+    my $item = $self->resultset->find($item_id);
+    $self->item_id(undef) unless $item;
+    return $item;
 }
 
 =head2 init_schema
@@ -688,25 +600,25 @@ $my_form_class->new(item_id => $id, schema => $schema)
 
 =cut
 
-sub init_schema
-{
-   my $self = shift;
-   return if exists $self->{schema};
-   if ( my $c = $self->user_data->{context} ) 
-   {
-       # starts out <model>::<source_name>
-       my $schema = $c->model( $self->object_class )->result_source->schema;
-       # change object_class to source_name
-       $self->source_name( $c->model( $self->object_class )->result_source->source_name );
-       return $schema;
-   }
-   die "Schema must be defined for Form::Processor::Model::DBIC";
+sub init_schema {
+    my $self = shift;
+    return if exists $self->{schema};
+    if ( my $c = $self->user_data->{context} ) {
+
+        # starts out <model>::<source_name>
+        my $schema = $c->model( $self->object_class )->result_source->schema;
+
+        # change object_class to source_name
+        $self->source_name(
+            $c->model( $self->object_class )->result_source->source_name );
+        return $schema;
+    }
+    die "Schema must be defined for Form::Processor::Model::DBIC";
 }
 
-sub init_source_name
-{
-   my $self = shift;
-   return $self->object_class;
+sub init_source_name {
+    my $self = shift;
+    return $self->object_class;
 }
 
 =head2 source
@@ -715,10 +627,9 @@ Returns a DBIx::Class::ResultSource object for this Result Class.
 
 =cut
 
-sub source
-{
-   my ( $self, $f_class ) = @_;
-   return $self->schema->source( $self->source_name || $self->object_class );
+sub source {
+    my ( $self, $f_class ) = @_;
+    return $self->schema->source( $self->source_name || $self->object_class );
 }
 
 =head2 resultset
@@ -729,48 +640,10 @@ a relationship.
 
 =cut
 
-sub resultset
-{
-   my ( $self, $f_class ) = @_;
-   return $self->schema->resultset( $self->source_name || $self->object_class );
-}
-
-=head2 many_to_many
-
-When passed the name of the has_many relationship for a many_to_many
-pseudo-relationship, this subroutine returns the relationship and column
-name from the mapping table to the current table, and the relationship and
-column name from the mapping table to the foreign table.
-
-This code assumes that the mapping table has only two columns 
-and two relationships, and you must have correct DBIx::Class relationships
-defined.
-
-For different table arrangements you could subclass 
-this method to return the correct relationship and column names. 
-
-=cut
-
-sub many_to_many
-{
-   my ( $self, $has_many_rel ) = @_;
-
-   # get rel and col pointing to self from reverse
-   my $source     = $self->source;
-   my $rev_rel    = $source->reverse_relationship_info($has_many_rel);
-   my ($self_rel) = keys %{$rev_rel};
-   my ($cond)     = values %{ $rev_rel->{$self_rel}{cond} };
-   my ($self_col) = $cond =~ m/^self\.(\w+)$/;
-
-   # assume that the other rel and col are for foreign table
-   my @rels = $source->related_source($has_many_rel)->relationships;
-   my $foreign_rel;
-   foreach (@rels) { $foreign_rel = $_ if $_ ne $self_rel; }
-   my $foreign_col;
-   my @cols = $source->related_source($has_many_rel)->columns;
-   foreach (@cols) { $foreign_col = $_ if $_ ne $self_col; }
-
-   return ( $self_rel, $self_col, $foreign_rel, $foreign_col );
+sub resultset {
+    my ( $self, $f_class ) = @_;
+    return $self->schema->resultset( $self->source_name
+          || $self->object_class );
 }
 
 =head2 build_form and _build_fields
@@ -781,44 +654,38 @@ with "required" set like other field attributes.
 
 =cut
 
-sub build_form
-{
-   my $self    = shift;
-   my $profile = $self->profile;
-   croak "Please define 'profile' method in subclass" unless ref $profile eq 'HASH';
+sub build_form {
+    my $self    = shift;
+    my $profile = $self->profile;
+    croak "Please define 'profile' method in subclass"
+      unless ref $profile eq 'HASH';
 
-   for my $group ( 'required', 'optional', 'fields' )
-   {
-      my $required = 'required' eq $group;
-      $self->_build_fields( $profile->{$group}, $required );
-      my $auto_fields = $profile->{ 'auto_' . $group } || next;
-      $self->_build_fields( $auto_fields, $required );
-   }
+    for my $group ( 'required', 'optional', 'fields' ) {
+        my $required = 'required' eq $group;
+        $self->_build_fields( $profile->{$group}, $required );
+        my $auto_fields = $profile->{ 'auto_' . $group } || next;
+        $self->_build_fields( $auto_fields, $required );
+    }
 }
 
-sub _build_fields
-{
-   my ( $self, $fields, $required ) = @_;
-   return unless $fields;
-   my $field;
-   if ( ref($fields) eq 'ARRAY' )
-   {
-      for (@$fields)
-      {
-         $field = $self->make_field( $_, 'Auto' ) || next;
-         $field->required($required) unless ( exists $field->{required} );
-         $self->add_field($field);
-      }
-      return;
-   }
-   while ( my ( $name, $type ) = each %$fields )
-   {
-      $field = $self->make_field( $name, $type ) || next;
-      $field->required($required) unless ( exists $field->{required} );
-      $self->add_field($field);
-   }
+sub _build_fields {
+    my ( $self, $fields, $required ) = @_;
+    return unless $fields;
+    my $field;
+    if ( ref($fields) eq 'ARRAY' ) {
+        for (@$fields) {
+            $field = $self->make_field( $_, 'Auto' ) || next;
+            $field->required($required) unless ( exists $field->{required} );
+            $self->add_field($field);
+        }
+        return;
+    }
+    while ( my ( $name, $type ) = each %$fields ) {
+        $field = $self->make_field( $name, $type ) || next;
+        $field->required($required) unless ( exists $field->{required} );
+        $self->add_field($field);
+    }
 }
-
 
 =head1 SEE ALSO
 

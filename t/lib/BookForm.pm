@@ -16,66 +16,69 @@ Catalyst Form.
 
 =cut
 
-sub object_class {  'Book' }
+sub object_class { 'Book' }
 
 sub profile {
-	my $self = shift;
+    my $self = shift;
 
-	return {
-		fields => {
-			title   => {
-				type => 'Text',
-				required => 1,
-				required_message => 'A book must have a title.',
-				label => 'Title',
-				order => '1',
-			},
-			author  => {
-				type => 'Text',
-				label => 'Author',
-				order => '2',
-			},
-            # has_many relationship pointing to mapping table
-			genres    => {
-				type => 'Multiple',
-				label => 'Genres',
-                label_column => 'name',
-			    order => '3',
+    return {
+        fields => {
+            title => {
+                type             => 'Text',
+                required         => 1,
+                required_message => 'A book must have a title.',
+                label            => 'Title',
+                order            => '1',
             },
-			isbn         => {
-				type => 'Text',
-				label => 'ISBN:',
-			    order => '5',
-			},
-			publisher    => {
-				type => 'Text',
-				label => 'Publisher',
-			    order => '4',
-			},
-			format       => {
-				type => 'Select',
-				label => 'Format',
-			    order => '6',
-			},
-			year         => {
-				type => 'Integer',
-				range_start => '1900',
-				range_end => '2020',
-				label => 'Year',
-				order => '7',
-			},
-			pages        => {
-				type => 'Integer',
-				label => 'Pages',
-				order => '8',
-			},
-         comment      => {
-            type => 'Text',
-            order => 9,
-         },
-		},
-      unique => ['isbn'],
-	};
+            author => {
+                type  => 'Text',
+                label => 'Author',
+                order => '2',
+            },
+            genres => {
+                type         => 'Multiple',
+                label        => 'Genres',
+                label_column => 'name',
+                order        => '3',
+            },
+            isbn => {
+                type  => 'Text',
+                label => 'ISBN:',
+                order => '5',
+            },
+            publisher => {
+                type  => 'Text',
+                label => 'Publisher',
+                order => '4',
+            },
+            format => {
+                type  => 'Select',
+                label => 'Format',
+                order => '6',
+            },
+            year => {
+                type        => 'Integer',
+                range_start => '1900',
+                range_end   => '2020',
+                label       => 'Year',
+                order       => '7',
+            },
+            pages => {
+                type  => 'Integer',
+                label => 'Pages',
+                order => '8',
+            },
+            comment => {
+                type  => 'Text',
+                order => 9,
+            },
+            test => {
+                type  => 'Text',
+                order => 10,
+            },
+        },
+        unique => ['isbn'],
+    };
 }
 
 # The following subroutine makes the same select list as
@@ -88,13 +91,13 @@ sub profile {
 #	);
 #}
 
-
 sub validate_year {
-	my ( $self, $field ) = @_;
-	$field->add_error('Invalid year')
-	     if (($field->value > 3000) || ($field->value < 1600));
-};
+    my ( $self, $field ) = @_;
+    $field->add_error('Invalid year')
+        if ( ( $field->value > 3000 ) || ( $field->value < 1600 ) );
+}
 
+sub init_value_test { 'testing' }
 
 =head1 AUTHOR
 
@@ -102,7 +105,7 @@ Gerda Shank
 
 =head1 LICENSE AND COPYRIGHT
 
-This module is free software; you can redistribute it and/or
+This module is free software; you can redistribute it and /or
 modify it under the same terms as Perl itself. See L<perlartistic>.
 
 =cut

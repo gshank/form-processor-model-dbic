@@ -1,6 +1,8 @@
 package Schema::DB::Book;
 
-use base 'DBIx::Class';
+use base ('DBIx::Class', 'Class::Accessor::Fast');
+
+__PACKAGE__->mk_accessors('comment');
 
 Schema::DB::Book->load_components("Core");
 Schema::DB::Book->table("book");

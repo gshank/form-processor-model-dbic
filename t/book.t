@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use Test::More tests => 18;
+use Test::More;
 use lib 't/lib';
 
 
@@ -27,6 +27,7 @@ my $good = {
     'format'       => 2,
     'isbn'   => '123-02345-0502-2' ,
     'publisher' => 'EreWhon Publishing',
+    'comment' => 'Some comment',
 };
 
 ok( $form->validate( $good ), 'good data validates');
@@ -35,6 +36,7 @@ ok( $form->update_from_form( $good ), 'Good data' );
 
 my $book = $form->item;
 END { $book->delete };
+is( $book->comment, 'Some comment', 'non-db accessor works' );
 
 ok ($book, 'get book object from form');
 
@@ -59,6 +61,7 @@ ok( $form, 'create form from db object');
 
 my $genres_field = $form->field('genres');
 is_deeply( sort $genres_field->value, [2, 4], 'value of multiple field is correct');
+is( $form->field('test')->value, 'testing', 'init_value works' );
 
 my $bad_2 = {
     'title' => "Another Silly Test Book",
@@ -75,3 +78,5 @@ ok( !$form->field('author')->has_error, 'author has no error' );
 ok( $form->field('format')->has_error, 'format has error' );
 
 
+
+done_testing;
