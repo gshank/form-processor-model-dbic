@@ -1,4 +1,8 @@
 Revision history for Form-Processor-Model-DBIC
+0.10 12/08/2009
+        Remove multiple for has_many, which was broken anyway. Use Bill's 
+        init_value method. Update book.t test.
+
 0.09 09/17/2009
         Actually ship fix
 
